@@ -17,6 +17,7 @@ ATTRIBUTE_SPACE = [
     "altitude",
     "terrain"
 ]
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 seeker = Seeker(
