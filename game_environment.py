@@ -1,18 +1,21 @@
 from bot import Seeker, Oracle
+import re
 
 class GameEnvironment:
     def __init__(self, seeker: Seeker, oracle: Oracle):
         self.seeker = seeker
         self.oracle = oracle
-        self.score = 100
+        self.score = (self.seeker.candidate_count / len(self.seeker.country_choice)) * 100
         self.question_budget = seeker.question_budget
         self.game_over = False
         self.guess = None
         self.correct = None
 
     def run(self):
-        print(f"The chosen country: {self.oracle.hidden_country}")
-        print(f"Game starting...\n")
+        turn = 1
+        print(f"The chosen country: {self.oracle.hidden_country}. THIS IS HIDDEN FROM THE SEEKER. ")
+        print(f"Oracle: I've chosen my country, ask your first question...\n")
+        print(f"The question budget for this round is {self.seeker.quetion_budget}")
 
         #print("=== SEEKER PROFILE ===")
         #print(self.seeker.profile())
@@ -21,28 +24,39 @@ class GameEnvironment:
 
         while self.seeker.questions_asked < self.question_budget:
             question = self.seeker.act()
+            
+            self.log_candidates(turn, self.seeker.last_plan)
+            
+            if question is None:
+                break
+
             print(f"Seeker: {question}")
-
-            self.score -= 10
-
             answer = self.oracle.action(question)
             print(f"Oracle: {answer}")
- 
-            print(f"Questions remaining: {self.question_budget - self.seeker.questions_asked}")
 
             self.seeker.update_history(question, answer)
             self.oracle.update_history(question, answer)
+            #self.score -= 10
+            turn += 1
 
         self.guess = self.seeker.make_guess()
         self.correct = self.guess.lower() == self.oracle.hidden_country.lower()
-        if not self.correct:
-            self.score = 0
-        self.game_over = True
+        
+        if self.correct:
+            winner = "Seeker"
+            self.game_over = True
+        else:
+            winner = "Oracle"
+            self.game_over = True
 
-        print(f"\nSeeker's final guess: {self.guess}")
-        print(f"Correct answer: {self.oracle.hidden_country}")
-        print(f"Correct: {self.correct}")
-        print(f"Score: {self.score}")
+        print(f"\nThe Seeker guessed {self.guess}")
+        print(f"The seeker used {self.seeker.questions_remaining} / {self.seeker.question_budget} questions. ")
+        print(f"\n{winner} wins! The correct answer was {self.oracle.hidden_country}")
+
+        #print(f"\nSeeker's final guess: {self.guess}")
+        #print(f"Correct answer: {self.oracle.hidden_country}")
+        #print(f"Correct: {self.correct}")
+        #print(f"Score: {self.score}")
 
     def result(self) -> dict:
         if not self.game_over:
@@ -54,3 +68,14 @@ class GameEnvironment:
             "question_asked": self.seeker.questions_asked,
             "score": self.score
         }
+
+    def log_candidates(self, turn: int, plan: str):
+        #print(f"RAW PLAN:\n{plan}\n") #TEMPORARY
+        try: 
+            candidates_line = [line for line in plan.split ("\n") if line.startswith("CANDIDATES:") ][0]
+            candidates = candidates_line.replace("CANDIDATES:", "").strip()
+        except IndexError:
+            candidates = "Could not parse candidates"
+        
+        with open("candidate_log.txt", "a") as f:
+            f.write(f"Turn {turn} | Count: {len(candidates.split(","))} | Country: {self.oracle.hidden_country} | Candidates: {candidates}\n")

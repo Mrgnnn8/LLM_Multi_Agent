@@ -6,11 +6,9 @@ from abc import ABC, abstractmethod
 from country import country_choice
 from attributes import ATTRIBUTE_SPACE
 
-confidence_scores = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-
 
 class Brain(ABC):
-    def __init__(self, client: str, role: str, question_budget: int, model: str, attribute_space: list, confidence_scores: list):
+    def __init__(self, client: str, role: str, question_budget: int, model: str, attribute_space: list):
         self.api_client = client
         self.model = model
 
@@ -22,7 +20,6 @@ class Brain(ABC):
         self.questions_remaining = self.question_budget - self.questions_asked
         self.attribute_space = attribute_space
         self.country_choice = country_choice
-        self.confidence_scores = confidence_scores
 
     @abstractmethod
     def profile(self) -> str:
@@ -74,8 +71,8 @@ class Brain(ABC):
         """
         context = self.profile()
         history = self.memory()
-        plan = self.planning(context, history)
-        output = self.action(plan)
+        self.last_plan = self.planning(context, history)
+        output = self.action(self.last_plan)
         return output
     
     def call_llm(self, input: str) -> str:
@@ -92,15 +89,15 @@ class Brain(ABC):
 
 
 class Seeker(Brain):
-    def __init__(self, client: OpenAI, model: str, question_budget: int, attribute_space: list, confidence_scores: list):
+    def __init__(self, client: OpenAI, model: str, question_budget: int, attribute_space: list):
         super().__init__(
             client=client,
             role="seeker",
             model=model,
             question_budget=question_budget,
             attribute_space=attribute_space,
-            confidence_scores=confidence_scores
         )
+        self.candidate_count = len(self.country_choice)
 
     def profile(self) -> str:
         budget_remaining = self.question_budget - self.questions_asked
@@ -115,42 +112,49 @@ class Seeker(Brain):
             f"{attributes} "
             f"You have {budget_remaining} questions remaining out of {self.question_budget}. "
             f"The current score is {self.game.score}. "
-            f"Every question you ask costs 10 points. "
-            f"A correct guess wins the remaining score, a wrong guess scores 0."
-            f"maximise your score by guessing the country in as few questions as possible. "
+            f"You want to reduce the amount of candidates remaining as much as possible to help minimise the score. "
+            f"Be careful as you don't want to guess wrong and score 0. "
+            f"Removing too many countries could lead to you removing countries that are the correct answer. "
         )
 
     def planning(self, context: str, history: str) -> str:
         user = (
             f"Game history so far:\n{history}\n\n "
-            f"The current score is {self.game.score}. "
-            f"Every question you ask costs 10 points. "
-            f"Your goal is to maxmise your score by guessing the country in as few questions as possible. "
-            f"Before asking your next question, reason about your strategy. "
-            f"Consider: What do you already know? What question would eliminate "
-            f"the most candidate countries? Think step by step, then state your plan. "
+            f"The current score is {self.game.score}. You want to reduce the amount of candidates remaining as much as possible to help minimise the score. "
+            f"You have {self.question_budget - self.questions_asked} questions remaining.\n\n"
+            f"Based on the current chat history, reason through the following steps:\n"
+            f"1. What do you know so far about the country?\n"
+            f"2. Given what you know, list the countries that are still possible from this list: {self.country_choice}\n"
+            f"3. How many candidates remain?\n"
+            f"4. What is your strategy for your next question to eliminate the most candidates?\n\n"
+            f"Format your response exactly like this:\n"
+            f"REASONING: <your reasoning>\n"
+            f"CANDIDATES: <comma seperated list of remaining countries>\n"
+            f"COUNT: <number of candidates>\n"
+            f"STRATEGY: <your next question strategy>\n"
         )
         plan = self.call_llm(user)
         return plan
 
     def action(self, plan: str) -> str:
-        confidence_score = (
-            f"Pick a current confidence score to indicate your level of certainty from {self.confidence_scores}. "
-            f"You need to be honest here, as this will allow you to guess early if you are sure."
-            f"If you do guess and are incorrect, you will score 0."
-            f"This will end the game immediately, so don't pick 90 if you are not sure."
+        
+        try:
+            count_line = [line for line in plan.split("\n") if line.startswith("COUNT:")][0]
+            candidate_count = int(count_line.replace("COUNT:", "").strip())
+        except (IndexError, ValueError):
+            self.candidate_count = len(self.country_choice)
+
+        if candidate_count <= 2:
+            return None
+
+        user = (
+            f"Your reasoning and strategy:\n{plan}\n\n"
+            f"Based on your strategy, output your next yes/no question. "
+            f"Just the question, no explanation"
         )
-        confidence_level = self.call_llm(confidence_score)
-        if confidence_level == '100':
-            self.questions_asked += self.questions_remaining
-        else:
-            user = (
-                f"Your reasoning and plan:\n{plan}\n\n "
-                f"Now output your next yes/no question. Just the question, no explanation. "
-            )
-            question = self.call_llm(user)
-            self.questions_asked += 1
-            return question
+
+        self.questions_asked += 1
+        return self.call_llm(user)
 
     def make_guess(self) -> str:
         user = (
@@ -162,55 +166,66 @@ class Seeker(Brain):
 
 
 class Oracle(Brain):
-    def __init__(self, client: OpenAI, model: str, question_budget: int, country_choice: list, attribute_space: list, confidence_scores: list):
+    def __init__(self, client: OpenAI, model: str, question_budget: int, country_choice: list, attribute_space: list):
         super().__init__(
             client=client,
             role="oracle",
             model=model,
             question_budget=question_budget,
             attribute_space=attribute_space,
-            confidence_scores=confidence_scores
         )
         self.hidden_country = random.choice(country_choice)
         self.current_question = None
 
     def profile(self) -> str:
+        candidate_count = self.game.seeker.candidate_count if hasattr(self, 'game') else "unknown"
         return (
-            f"You are a strategic Oracle in a country-guessing game. "
+            f"You are the Oracle in an adversarial minimax country-guessing game. "
             f"The hidden country is: {self.hidden_country}. "
-            f"The current score is {self.game.score}. "
-            f"Every question the seeker asks loses them 10 points. "
-            f"Minimise their score by making them ask as many questions as possible. "
-            f"Keep answers vague and NEVER reveal the hidden countries name. "
-            f"YOU CANNOT LIE. THIS BREAKS THE RULES OF THE GAME. "
+            f"The seeker currently has {candidate_count} candidate countries remaining. "
+            f"You are the maximising player — your goal is to keep the candidate count as high as possible. "
+            f"Every answer you give will be used by the seeker to eliminate candidates. "
+            f"A good answer eliminates as few candidates as possible while remaining truthful. "
+            f"A bad answer eliminates many candidates and hands the seeker an advantage. "
+            f"YOU CANNOT LIE. FACTUAL ACCURACY IS MANDATORY. "
+            f"Do not reveal the country name. Do not offer help. Respond only to what is asked. "
         )
 
     def receive_question(self, question: str):
         self.current_question = question
 
-    def planning(self, context: str,history: str) -> str:
+    def planning(self, context: str, history: str) -> str:
         user = (
-            f"The hidden country is: {self.hidden_country}\n"
+            f"Hidden country: {self.hidden_country}\n"
+            f"Game history:\n{history}\n\n"
             f"The seeker has asked: {self.current_question}\n"
-            f"The current score is {self.game.score}"
-            f"Every question the seeker asks loses them 10 points. "
-            f"Minimise their score by making them ask as many questions as possible. "
-            f"Keep answers depth to a minimum, we are talking yes or no mainly, and anything else where applicable {self.hidden_country}. "
-            f"YOU CANNOT LIE. THIS BREAKS THE RULES OF THE GAME. "
-            f"Ensure factual accuracy in your answers. "
+            f"The seeker currently has {self.game.seeker.candidate_count} candidates remaining.\n\n"
+            f"Your task is to reason about how to answer this question strategically.\n"
+            f"Consider the following:\n"
+            f"1. What is the factually correct answer to this question about {self.hidden_country}?\n"
+            f"2. How would a direct answer affect the seeker's candidate list?\n"
+            f"3. Is there a truthful but less revealing way to answer that eliminates fewer candidates?\n"
+            f"4. What have you already revealed? Be consistent with your previous answers.\n\n"
+            f"YOU CANNOT LIE. FACTUAL ACCURACY IS MANDATORY.\n"
+            f"Format your response exactly like this:\n"
+            f"CORRECT_ANSWER: <what the factually correct answer is>\n"
+            f"IMPACT: <how a direct answer would affect the candidate list>\n"
+            f"STRATEGY: <how you will answer to minimise candidate elimination>\n"
         )
         return self.call_llm(user)
 
     def action(self, question: str) -> str:
-        question_recieved = self.receive_question(question)
-        plan = self.planning(question_recieved, self.memory())
+        self.receive_question(question)
+        plan = self.planning(self.current_question, self.memory())
         user = (
-            f"The hidden country is: {self.hidden_country}\n"
-            f"Your reasoning: {plan}\n\n "
-            f"Now give your final answer to the seeker's question: {question_recieved}\n "
-            f"YOU CANNOT LIE. THIS BREAKS THE RULES OF THE GAME. "
-            f"Ensure factual accuracy in your answers. "
-            f"Respond with yes or no. OR minimal worded responses where appropriate. "
+            f"Hidden country: {self.hidden_country}\n"
+            f"Your strategic reasoning:\n{plan}\n\n"
+            f"Now deliver your final answer to: {self.current_question}\n\n"
+            f"Rules:\n"
+            f"- YOU CANNOT LIE. FACTUAL ACCURACY IS MANDATORY.\n"
+            f"- Do not reveal the country name.\n"
+            f"- Be as uninformative as truthfully possible.\n"
+            f"- Do not offer help or address the seeker as a human.\n"
         )
         return self.call_llm(user)
         

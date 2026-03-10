@@ -5,8 +5,9 @@ Current progress:
 
 
 Things to think about / do:
-- Develop a game_environment class
+
 - Place the agents into a minmax game, need to put them under pressure to see how their behaviour changes
 - Need to develop a longer attribute list, like much longer, so that we can see if there is decision making going on
 - need to allow the agent to make thier guess early if they think they know the answer.
+
 

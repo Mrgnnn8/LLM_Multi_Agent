@@ -189,7 +189,7 @@ country_choice = [
 'Uruguay',
 'Uzbekistan',
 'Vanuatu',
-'Vatican_City_(Holy_See)',
+'Vatican_City',
 'Venezuela',
 'Vietnam',
 'Yemen',
